@@ -1,6 +1,7 @@
 package com.example.dvhub
 
 import android.os.Bundle
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -22,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -49,6 +51,8 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun WelcomePage(modifier: Modifier = Modifier) {
+
+    val context = LocalContext.current
 
     Column(
         modifier = modifier
@@ -100,11 +104,15 @@ fun WelcomePage(modifier: Modifier = Modifier) {
 
         val buttonShape = RoundedCornerShape(24.dp)
 
-        // Bottom button - beautified
+        // Bottom button - beautified, navigates to BleConnectActivity
         Button(
-            onClick = { /* TODO */ },
+            onClick = {
+                val intent = Intent(context, BleConnectActivity::class.java)
+                context.startActivity(intent)
+            },
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(top = 24.dp)
                 .clip(buttonShape),
             colors = ButtonDefaults.buttonColors(
                 containerColor = Color(0xFF2E7D32),    // green, matches "save food/planet" theme
