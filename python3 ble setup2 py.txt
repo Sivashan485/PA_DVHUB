@@ -1,0 +1,2 @@
+python3 ble_setup2.py --adapter 88:A2:9E:24:85:80 --device-id hub-001 --name SMARTTUPPLEWARE_HUB_001
+

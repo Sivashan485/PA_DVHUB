@@ -19,7 +19,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresPermission
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -33,7 +32,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
-import org.json.JSONObject
 import java.util.UUID
 
 private const val TAG = "BleConnectActivity"
@@ -42,14 +40,6 @@ private const val SCAN_TIMEOUT_MS = 10_000L
 private val HUB_SERVICE_UUID: UUID =
     UUID.fromString("12345678-1234-5678-1234-56789abcdef0")
 
-private val HUB_INFO_CHAR_UUID: UUID =
-    UUID.fromString("12345678-1234-5678-1234-56789abcdef3")
-
-private val AUTH_CHAR_UUID: UUID =
-    UUID.fromString("12345678-1234-5678-1234-56789abcdef4")
-
-private val WIFI_CHAR_UUID: UUID =
-    UUID.fromString("12345678-1234-5678-1234-56789abcdef2")
 
 data class HubScanItem(
     val device: BluetoothDevice,
@@ -57,24 +47,11 @@ data class HubScanItem(
     val rssi: Int
 )
 
-data class HubIdentity(
-    val deviceId: String,
-    val fw: String,
-    val vendor: String,
-    val model: String
-)
 
 class BleConnectActivity : ComponentActivity() {
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private var scanner: BluetoothLeScanner? = null
-    private var gatt: BluetoothGatt? = null
-
-    // simple demo token (must match server)
-    private val authToken = "pair-token-123"
-
-    // keep pending actions for the current connection
-    private var pendingWifiJson: String? = null
     private var pendingDevice: BluetoothDevice? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,199 +83,46 @@ class BleConnectActivity : ComponentActivity() {
         Log.d(TAG, "Connecting to ${device.address}")
         pendingDevice = device
 
-        val callback = object : BluetoothGattCallback() {
-
-            override fun onConnectionStateChange(g: BluetoothGatt?, status: Int, newState: Int) {
-                if (g == null) return
-
-                when (newState) {
-                    BluetoothProfile.STATE_CONNECTED -> {
-                        Log.d(TAG, "Connected. Discovering services...")
-                        runOnUiThread {
-                            Toast.makeText(this@BleConnectActivity, "Connected, discovering…", Toast.LENGTH_SHORT).show()
-                        }
-                        g.discoverServices()
-                    }
-                    BluetoothProfile.STATE_DISCONNECTED -> {
-                        Log.d(TAG, "Disconnected")
-                        runOnUiThread {
-                            Toast.makeText(this@BleConnectActivity, "Disconnected", Toast.LENGTH_SHORT).show()
-                        }
-                        g.close()
-                    }
-                }
-            }
-
-            override fun onServicesDiscovered(g: BluetoothGatt?, status: Int) {
-                if (g == null) return
-                if (status != BluetoothGatt.GATT_SUCCESS) {
-                    Log.e(TAG, "Service discovery failed: $status")
-                    g.disconnect()
-                    return
-                }
-
-                val hubService = g.getService(HUB_SERVICE_UUID)
-                if (hubService == null) {
-                    Log.e(TAG, "Not a hub (missing service)")
-                    runOnUiThread { Toast.makeText(this@BleConnectActivity, "Not a hub device", Toast.LENGTH_SHORT).show() }
-                    g.disconnect()
-                    return
-                }
-
-                val hubInfoChar = hubService.getCharacteristic(HUB_INFO_CHAR_UUID)
-                if (hubInfoChar == null || (hubInfoChar.properties and BluetoothGattCharacteristic.PROPERTY_READ) == 0) {
-                    Log.e(TAG, "Not a hub (missing hub info char)")
-                    runOnUiThread { Toast.makeText(this@BleConnectActivity, "Not a hub device", Toast.LENGTH_SHORT).show() }
-                    g.disconnect()
-                    return
-                }
-
-                // Read hub identity JSON
-                val ok = g.readCharacteristic(hubInfoChar)
-                if (!ok) {
-                    Log.e(TAG, "Failed to start hub info read")
-                    g.disconnect()
-                }
-            }
-
-            override fun onCharacteristicRead(g: BluetoothGatt?, ch: BluetoothGattCharacteristic?, status: Int) {
-                if (g == null || ch == null) return
-                if (status != BluetoothGatt.GATT_SUCCESS) {
-                    Log.e(TAG, "Read failed: $status")
-                    g.disconnect()
-                    return
-                }
-
-                if (ch.uuid == HUB_INFO_CHAR_UUID) {
-                    val raw = ch.value?.toString(Charsets.UTF_8) ?: ""
-                    Log.d(TAG, "Hub info: $raw")
-
-                    val identity = parseAndValidateHubIdentity(raw)
-                    if (identity == null) {
-                        runOnUiThread {
-                            Toast.makeText(this@BleConnectActivity, "Device is not a valid hub", Toast.LENGTH_SHORT).show()
-                        }
-                        g.disconnect()
-                        return
-                    }
-
-                    runOnUiThread {
-                        Toast.makeText(this@BleConnectActivity, "Hub verified: ${identity.deviceId}", Toast.LENGTH_SHORT).show()
-                    }
-
-                    // Optional: auth step before allowing WiFi writes
-                    val hubService = g.getService(HUB_SERVICE_UUID) ?: run {
-                        g.disconnect(); return
-                    }
-                    val authChar = hubService.getCharacteristic(AUTH_CHAR_UUID)
-
-                    if (authChar != null && (authChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0) {
-                        authChar.value = authToken.toByteArray(Charsets.UTF_8)
-                        val started = g.writeCharacteristic(authChar)
-                        Log.d(TAG, "Auth write started: $started")
-                        if (!started) g.disconnect()
-                    } else {
-                        Log.w(TAG, "No auth characteristic; proceeding without auth")
-                        // If you want to write WiFi immediately without auth, do it here.
-                        pendingWifiJson?.let { writeWifiJsonNow(g, it) }
-                    }
-                }
-            }
-
-            override fun onCharacteristicWrite(g: BluetoothGatt?, ch: BluetoothGattCharacteristic?, status: Int) {
-                if (g == null || ch == null) return
-
-                if (ch.uuid == AUTH_CHAR_UUID) {
-                    if (status == BluetoothGatt.GATT_SUCCESS) {
-                        Log.d(TAG, "Auth OK")
-                        pendingWifiJson?.let { writeWifiJsonNow(g, it) }
-                    } else {
-                        Log.e(TAG, "Auth failed: $status")
-                        runOnUiThread {
-                            Toast.makeText(this@BleConnectActivity, "Auth failed", Toast.LENGTH_SHORT).show()
-                        }
-                        g.disconnect()
-                    }
-                    return
-                }
-
-                if (ch.uuid == WIFI_CHAR_UUID) {
-                    if (status == BluetoothGatt.GATT_SUCCESS) {
-                        runOnUiThread {
-                            Toast.makeText(this@BleConnectActivity, "WiFi credentials sent ✅", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        runOnUiThread {
-                            Toast.makeText(this@BleConnectActivity, "WiFi write failed ($status)", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+        // Setup callbacks for BleManager
+        BleManager.onConnectionStateChanged = { connected ->
+            runOnUiThread {
+                if (connected) {
+                    Toast.makeText(this@BleConnectActivity, "Connected, discovering…", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@BleConnectActivity, "Disconnected", Toast.LENGTH_SHORT).show()
                 }
             }
         }
 
-        gatt?.close()
-        gatt = device.connectGatt(this, false, callback)
+        BleManager.onHubVerified = { identity ->
+            runOnUiThread {
+                Toast.makeText(this@BleConnectActivity, "Hub verified: ${identity.deviceId}", Toast.LENGTH_SHORT).show()
+                // Navigate to NetworkSetupActivity after successful verification
+                val deviceName = try {
+                    device.name ?: identity.deviceId
+                } catch (_: SecurityException) {
+                    identity.deviceId
+                }
+                navigateToNetworkSetup(deviceName)
+            }
+        }
+
+        // Connect using BleManager
+        BleManager.connectToDevice(this, device)
     }
 
-    /**
-     * Call this after you connected+verified (or set pendingWifiJson before connect).
-     * If already connected, it will attempt to write immediately (after auth).
-     */
-    fun sendWifiCredentials(ssid: String, password: String) {
-        val json = JSONObject()
-            .put("ssid", ssid)
-            .put("password", password)
-            .toString()
-
-        pendingWifiJson = json
-
-        val g = gatt
-        if (g != null) {
-            // If already connected, try writing now (auth flow will handle ordering)
-            writeWifiJsonNow(g, json)
+    private fun navigateToNetworkSetup(deviceName: String) {
+        val intent = Intent(this, NetworkSetupActivity::class.java).apply {
+            putExtra("DEVICE_ADDRESS", pendingDevice?.address ?: "")
+            putExtra("DEVICE_NAME", deviceName)
         }
+        startActivity(intent)
     }
 
-    @SuppressLint("MissingPermission")
-    private fun writeWifiJsonNow(g: BluetoothGatt, wifiJson: String) {
-        val hubService = g.getService(HUB_SERVICE_UUID) ?: run {
-            Log.e(TAG, "Missing hub service when writing WiFi")
-            g.disconnect(); return
-        }
-        val wifiChar = hubService.getCharacteristic(WIFI_CHAR_UUID)
-        if (wifiChar == null || (wifiChar.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) == 0) {
-            Log.e(TAG, "Missing wifi characteristic or not writable")
-            g.disconnect()
-            return
-        }
-        wifiChar.value = wifiJson.toByteArray(Charsets.UTF_8)
-        val started = g.writeCharacteristic(wifiChar)
-        Log.d(TAG, "WiFi write started: $started")
-        if (!started) g.disconnect()
-    }
-
-    private fun parseAndValidateHubIdentity(rawJson: String): HubIdentity? {
-        return try {
-            val obj = JSONObject(rawJson)
-            val type = obj.optString("type")
-            val vendor = obj.optString("vendor")
-            val model = obj.optString("model")
-            val fw = obj.optString("fw")
-            val deviceId = obj.optString("device_id")
-
-            // strict validation: only accept YOUR hub signature
-            val ok = (type == "SMARTTUPPLEWARE_HUB" && vendor == "ZHAW" && model == "DVHUB" && deviceId.isNotBlank())
-            if (!ok) null else HubIdentity(deviceId = deviceId, fw = fw, vendor = vendor, model = model)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     override fun onDestroy() {
         super.onDestroy()
-        gatt?.close()
-        gatt = null
+        // BleManager maintains the GATT connection for NetworkSetupActivity
+        // Don't disconnect here, let NetworkSetupActivity handle it
     }
 }
 
@@ -508,7 +332,7 @@ private fun startSafeScanFiltered(
         scanner.startScan(filters, settings, callback)
         Log.d(TAG, "Filtered hub scan started")
         true
-    } catch (e: SecurityException) {
+    } catch (_: SecurityException) {
         Toast.makeText(context, "Missing Bluetooth permissions", Toast.LENGTH_SHORT).show()
         false
     } catch (e: Exception) {
