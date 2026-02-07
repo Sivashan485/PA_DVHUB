@@ -5,13 +5,14 @@ import json
 import argparse
 import subprocess
 import time
+from typing import Optional, Tuple
 
 SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef0"
 CHAR_UUID = "12345678-1234-5678-1234-56789abcdef1"
 WIFI_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef2"
 HUB_INFO_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef3"
 AUTH_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef4"
-WIFI_STATUS_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef5"  # NEW
+WIFI_STATUS_CHAR_UUID = "12345678-1234-5678-1234-56789abcdef5"
 
 
 def main():
@@ -21,12 +22,18 @@ def main():
     parser.add_argument("--device-id", required=True, help="Unique hub identifier (e.g., hub-001)")
     parser.add_argument("--fw", default="1.0.0", help="Firmware version string")
     parser.add_argument("--auth-token", default="pair-token-123", help="Simple auth token (demo)")
+    # optionally pin Wi-Fi interface (recommended on multi-adapter systems)
+    parser.add_argument(
+        "--wifi-iface",
+        default="",
+        help="Wi-Fi interface (e.g., wlan0, wlp2s0). If empty, auto-detect.",
+    )
     args = parser.parse_args()
 
     # ---- Hub state ----
     value = bytearray(b"ZHAW-SMARTTUPPLEWARE")
     wifi_credentials = {"ssid": None, "password": None}
-    wifi_status = {"success": None, "reason": "not attempted"}  # NEW
+    wifi_status = {"success": None, "reason": "not attempted"}
     is_authorized = False
 
     HUB_IDENTITY = {
@@ -38,87 +45,182 @@ def main():
     }
 
     # ---- Helpers ----
-    def try_connect_wifi(ssid: str, password: str, wifi_iface: str | None = None, timeout_s: int = 35):
-    """
-    Connect via NetworkManager (nmcli).
-    - Rescans first (avoids 'SSID not found' from stale cache)
-    - Optionally pins to a specific Wi-Fi interface
-    - Falls back to creating a connection (helps with hidden SSIDs)
-    Returns (success: bool, reason: str).
-    """
-    if not ssid:
-        return False, "missing ssid"
-    if password is None:
-        password = ""
+    def _run(cmd, timeout=30):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
-    def run(cmd, t=timeout_s):
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=t)
+    def _detect_wifi_iface() -> Optional[str]:
+        """
+        Detect a Wi-Fi interface managed by NetworkManager.
+        Prefers a connected Wi-Fi device; otherwise picks the first Wi-Fi device.
+        """
+        try:
+            res = _run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "dev"], timeout=10)
+            if res.returncode != 0:
+                return None
+            wifi_devs = []
+            for ln in (res.stdout or "").splitlines():
+                parts = ln.split(":")
+                if len(parts) >= 3 and parts[1] == "wifi":
+                    wifi_devs.append((parts[0], parts[2]))
+            if not wifi_devs:
+                return None
+            for dev, st in wifi_devs:
+                if st == "connected":
+                    return dev
+            return wifi_devs[0][0]
+        except Exception:
+            return None
 
-    # Identify wifi interface if not provided
-    if wifi_iface is None:
-        devs = run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "dev"])
-        wifi_devs = []
-        for ln in (devs.stdout or "").splitlines():
-            parts = ln.split(":")
-            if len(parts) >= 3 and parts[1] == "wifi":
-                wifi_devs.append((parts[0], parts[2]))
-        # Prefer a connected one, else first wifi device
-        wifi_iface = next((d for d, st in wifi_devs if st == "connected"), None) or (wifi_devs[0][0] if wifi_devs else None)
+    def forget_saved_wifi_profiles(ssid: str) -> int:
+        """
+        "Forget" Wi-Fi networks by deleting ALL saved NetworkManager connection
+        profiles whose stored SSID matches `ssid`.
 
-    if not wifi_iface:
-        return False, "no wifi interface found (nmcli dev shows no TYPE=wifi)"
+        Returns number of deleted profiles.
+        """
+        if not ssid:
+            return 0
 
-    # Ensure wifi radio is on
-    run(["nmcli", "radio", "wifi", "on"], t=10)
+        # List saved connections with their name, uuid, and type
+        res = _run(["nmcli", "-t", "-f", "NAME,UUID,TYPE", "con", "show"], timeout=10)
+        if res.returncode != 0:
+            return 0
 
-    # Rescan + short wait
-    run(["nmcli", "dev", "wifi", "rescan", "ifname", wifi_iface], t=15)
-    time.sleep(2)
+        deleted = 0
+        for ln in (res.stdout or "").splitlines():
+            try:
+                name, uuid, ctype = ln.split(":", 2)
+            except ValueError:
+                continue
 
-    # Check if SSID is visible (best effort)
-    lst = run(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list", "ifname", wifi_iface], t=15)
-    visible = ssid in (lst.stdout or "").splitlines()
+            # Only consider Wi-Fi connections
+            if ctype != "802-11-wireless":
+                continue
 
-    # Try normal connect first (works for visible SSIDs)
-    cmd = ["nmcli", "dev", "wifi", "connect", ssid, "ifname", wifi_iface]
-    if password != "":
-        cmd += ["password", password]
+            # Query the SSID stored in that profile
+            ss = _run(["nmcli", "-g", "802-11-wireless.ssid", "con", "show", uuid], timeout=10)
+            prof_ssid = (ss.stdout or "").strip()
 
-    res = run(cmd)
-    if res.returncode == 0:
-        return True, "connected"
+            if prof_ssid == ssid:
+                _run(["nmcli", "con", "delete", uuid], timeout=10)
+                deleted += 1
 
-    msg = (res.stderr or res.stdout or "nmcli connect failed").strip()
+        return deleted
 
-    # If SSID wasn't visible, try a hidden-SSID style connection profile
-    # (also helps when scan caching is weird)
-    if ("No network with SSID" in msg) or (not visible):
-        con_name = f"bleprov-{ssid}"
-        # delete existing with same name (ignore errors)
-        run(["nmcli", "con", "delete", con_name], t=10)
+    def try_connect_wifi(
+        ssid: str,
+        password: str,
+        wifi_iface: Optional[str] = None,
+        timeout_s: int = 35,
+    ) -> Tuple[bool, str]:
+        """
+        Connect using NetworkManager (nmcli).
 
-        add = run(["nmcli", "con", "add",
-                   "type", "wifi",
-                   "ifname", wifi_iface,
-                   "con-name", con_name,
-                   "ssid", ssid], t=15)
-        if add.returncode != 0:
-            return False, (add.stderr or add.stdout or msg).strip()
+        Features:
+          - Ensures Wi-Fi radio is on
+          - Pins to a specific Wi-Fi interface (auto-detected if not provided)
+          - Forces a rescan before connecting
+          - NEW: "forgets" any existing saved profile(s) with the same SSID
+          - Falls back to creating a connection profile (helps hidden SSIDs / scan issues)
 
-        run(["nmcli", "con", "modify", con_name, "wifi.hidden", "yes"], t=10)
+        Returns (success, reason).
+        """
+        if not ssid:
+            return False, "missing ssid"
+        if password is None:
+            password = ""
 
+        # Choose interface
+        if not wifi_iface:
+            wifi_iface = _detect_wifi_iface()
+        if not wifi_iface:
+            return False, "no wifi interface found (nmcli dev shows no TYPE=wifi)"
+
+        # Turn Wi-Fi on
+        try:
+            _run(["nmcli", "radio", "wifi", "on"], timeout=10)
+        except Exception:
+            pass
+
+        # Rescan
+        try:
+            _run(["nmcli", "dev", "wifi", "rescan", "ifname", wifi_iface], timeout=15)
+            time.sleep(2)
+        except Exception:
+            pass
+
+        # Forget old saved profiles for this SSID (prevents stale creds/settings)
+        try:
+            n = forget_saved_wifi_profiles(ssid)
+            if n:
+                print(f"Forgot {n} saved profile(s) for SSID={ssid}", flush=True)
+        except Exception as e:
+            # Don't fail provisioning just because cleanup failed
+            print(f"Warning: failed to forget profiles for SSID={ssid}: {e}", flush=True)
+
+        # Best-effort visibility check
+        visible = False
+        try:
+            lst = _run(
+                ["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list", "ifname", wifi_iface],
+                timeout=15,
+            )
+            if lst.returncode == 0:
+                visible = ssid in (lst.stdout or "").splitlines()
+        except Exception:
+            visible = False
+
+        # Attempt direct connect first
+        cmd = ["nmcli", "dev", "wifi", "connect", ssid, "ifname", wifi_iface]
         if password != "":
-            run(["nmcli", "con", "modify", con_name, "wifi-sec.key-mgmt", "wpa-psk"], t=10)
-            run(["nmcli", "con", "modify", con_name, "wifi-sec.psk", password], t=10)
+            cmd += ["password", password]
 
-        up = run(["nmcli", "con", "up", con_name], t=30)
-        if up.returncode == 0:
-            return True, "connected (profile)"
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            return False, "timeout"
+        except FileNotFoundError:
+            return False, "nmcli not found (NetworkManager not installed)"
+        except Exception as e:
+            return False, f"exception: {e}"
 
-        return False, (up.stderr or up.stdout or msg).strip()
+        if res.returncode == 0:
+            return True, f"connected via {wifi_iface}"
 
-    return False, msg
+        msg = (res.stderr or res.stdout or "nmcli connect failed").strip()
 
+        # If not found / not visible -> fallback: create explicit profile (supports hidden SSIDs)
+        if ("No network with SSID" in msg) or (not visible):
+            con_name = f"bleprov-{ssid}"
+
+            # Delete if exists (ignore errors)
+            try:
+                _run(["nmcli", "con", "delete", con_name], timeout=10)
+            except Exception:
+                pass
+
+            add = _run(
+                ["nmcli", "con", "add", "type", "wifi", "ifname", wifi_iface, "con-name", con_name, "ssid", ssid],
+                timeout=15,
+            )
+            if add.returncode != 0:
+                return False, (add.stderr or add.stdout or msg).strip()
+
+            # Mark hidden (safe even if not hidden)
+            _run(["nmcli", "con", "modify", con_name, "wifi.hidden", "yes"], timeout=10)
+
+            # Security
+            if password != "":
+                _run(["nmcli", "con", "modify", con_name, "wifi-sec.key-mgmt", "wpa-psk"], timeout=10)
+                _run(["nmcli", "con", "modify", con_name, "wifi-sec.psk", password], timeout=10)
+
+            up = _run(["nmcli", "con", "up", con_name], timeout=30)
+            if up.returncode == 0:
+                return True, f"connected (profile) via {wifi_iface}"
+
+            return False, (up.stderr or up.stdout or msg).strip()
+
+        return False, msg
 
     # ---- Callbacks ----
     def read_value():
@@ -179,8 +281,15 @@ def main():
             print("  SSID:", wifi_credentials["ssid"], flush=True)
             print("  PASS:", wifi_credentials["password"], flush=True)
 
+            wifi_iface = args.wifi_iface.strip() or None
+
             # Try to connect immediately
-            ok, reason = try_connect_wifi(wifi_credentials["ssid"], wifi_credentials["password"])
+            ok, reason = try_connect_wifi(
+                wifi_credentials["ssid"],
+                wifi_credentials["password"],
+                wifi_iface=wifi_iface,
+                timeout_s=35,
+            )
             wifi_status["success"] = ok
             wifi_status["reason"] = reason
 
@@ -258,7 +367,7 @@ def main():
         write_callback=write_wifi_credentials,
     )
 
-    # WiFi status characteristic (read-only)  <-- NEW
+    # WiFi status characteristic (read-only)
     ble.add_characteristic(
         srv_id=1,
         chr_id=5,
@@ -270,18 +379,13 @@ def main():
     )
 
     print("Publishing hub:", HUB_IDENTITY, "name:", args.name, flush=True)
+    print("Wi-Fi interface:", (args.wifi_iface.strip() or "auto-detect"), flush=True)
     ble.publish()
-    print(
-        "Ready. In nRF Connect: CONNECT -> write AUTH -> write WIFI -> read WIFI_STATUS",
-        flush=True,
-    )
+    print("Ready. In nRF Connect: CONNECT -> write AUTH -> write WIFI -> read WIFI_STATUS", flush=True)
 
     GLib.MainLoop().run()
 
 
 if __name__ == "__main__":
     main()
-
-#sudo nano /etc/systemd/system/ble-hub.service
-
 
