@@ -2,9 +2,12 @@
 
 
 
- sudo nano /etc/systemd/system/ble-hub.service
- ble_5.py
+ <a>sudo nano /etc/systemd/system/ble-hub.service</a>
+ 
+ <a>FILE NAME : ble_5.py
+</a>
 
+<a>LOGS: journalctl -u ble-hub -f</a>
 
 
 <img width="358" height="799" alt="image" src="https://github.com/user-attachments/assets/8d064532-264f-473a-897c-d236f9120d1d" />
