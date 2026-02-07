@@ -31,9 +31,12 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.DVHUB">
+        android:theme="@style/Theme.DVHUB"
+        android:screenOrientation="portrait"
+        >
         <activity
             android:name=".MainActivity"
+
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.DVHUB">
@@ -43,8 +46,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity android:name=".BleConnectActivity" />
-        <activity android:name=".NetworkSetupActivity" />
+        <activity android:name=".WifiSetupActivity" />
+        <activity android:name=".NetworkTypeSelectionActivity"/>
+        <activity android:name=".EthernetSetupActivity"/>
+        <activity android:name=".BleConnectActivity"/>
+
     </application>
 
 </manifest>

@@ -15,22 +15,27 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.dvhub.ui.theme.DVHUBTheme
 
-class NetworkSetupActivity : ComponentActivity() {
+class WifiSetupActivity : ComponentActivity() {
 
     private var deviceAddress: String? = null
     private var deviceName: String? = null
@@ -179,22 +184,12 @@ fun NetworkSetupScreen(
     var password by remember { mutableStateOf("") }
     var showPasswordDialog by remember { mutableStateOf(false) }
 
+    val green = Color(0xFF2E7D32)
+    val shape = RoundedCornerShape(16.dp)
+
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Network Setup") },
-                actions = {
-                    IconButton(
-                        onClick = onScanWifi,
-                        enabled = !isScanning
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Scan WiFi"
-                        )
-                    }
-                }
-            )
+            TopAppBar(title = { Text("Wi-Fi Setup") })
         }
     ) { innerPadding ->
         Column(
@@ -202,103 +197,155 @@ fun NetworkSetupScreen(
                 .padding(innerPadding)
                 .fillMaxSize()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Text(
-                text = "Configure WiFi for:",
-                style = MaterialTheme.typography.titleMedium
-            )
 
-            Text(
-                text = deviceName,
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
+            // ===== TOP CONTENT =====
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "Connect your hub to Wi-Fi",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-            Spacer(modifier = Modifier.height(8.dp))
+                Spacer(Modifier.height(8.dp))
 
-            Text(
-                text = "Available Networks",
-                style = MaterialTheme.typography.titleMedium
-            )
-
-            if (isScanning) {
-                Row(
+                Text(
+                    text = "Select a Wi-Fi network for $deviceName.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Scanning...")
-                }
-            } else if (networks.isEmpty()) {
-                Card(
+                        .padding(horizontal = 8.dp)
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                // Scan button (primary)
+                Button(
+                    onClick = onScanWifi,
+                    enabled = !isScanning,
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = green,
+                        contentColor = Color.White,
+                        disabledContainerColor = Color(0xFFBDBDBD),
+                        disabledContentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(24.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+                    Text(if (isScanning) "Scanning…" else "Scan for networks", fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                if (isScanning) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Looking for nearby Wi-Fi…")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                Text(
+                    text = "Available networks: ${networks.size}",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                if (!isScanning && networks.isEmpty()) {
+                    // empty state card
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        shape = shape
                     ) {
                         Text(
-                            text = "No networks found. Tap refresh to scan.",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "No networks found. Tap Scan to try again.",
+                            modifier = Modifier.padding(16.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(networks) { network ->
-                        NetworkItem(
-                            scanResult = network,
-                            isSelected = selectedSsid == network.SSID,
-                            onClick = {
-                                selectedSsid = network.SSID
-                                showPasswordDialog = true
-                            }
-                        )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 140.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(networks, key = { it.BSSID ?: it.SSID }) { network ->
+                            WifiOptionCard(
+                                ssid = network.SSID,
+                                subtitle = "${getSecurityType(network)}  •  Signal ${WifiManager.calculateSignalLevel(network.level, 5)}/4",
+                                indicator = getSignalIndicator(network.level),
+                                selected = selectedSsid == network.SSID,
+                                onClick = { selectedSsid = network.SSID
+                                    showPasswordDialog = true   // ✅ open dialog immediately
+
+                                }
+                            )
+                        }
                     }
                 }
+
+                Spacer(Modifier.height(12.dp))
             }
 
-            OutlinedButton(
-                onClick = onCancel,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Cancel")
+            // ===== BOTTOM ACTIONS =====
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = { showPasswordDialog = true },
+                    enabled = selectedSsid != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = green,
+                        contentColor = Color.White,
+                        disabledContainerColor = Color(0xFFBDBDBD),
+                        disabledContentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Text("Continue", fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Text("Cancel")
+                }
             }
         }
     }
 
-    // Password dialog
+    // ===== PASSWORD DIALOG =====
     if (showPasswordDialog && selectedSsid != null) {
         AlertDialog(
             onDismissRequest = { showPasswordDialog = false },
-            title = { Text("Enter Password") },
+            title = { Text("Enter Wi-Fi password") },
             text = {
                 Column {
                     Text(
-                        text = "Network: $selectedSsid",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        text = "Network: ${selectedSsid!!}",
+                        color = green,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(Modifier.height(16.dp))
                     OutlinedTextField(
                         value = password,
                         onValueChange = { password = it },
-                        label = { Text("WiFi Password") },
+                        label = { Text("Wi-Fi Password") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation()
@@ -308,11 +355,15 @@ fun NetworkSetupScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (selectedSsid != null) {
-                            onSubmit(selectedSsid!!, password)
-                            showPasswordDialog = false
-                        }
-                    }
+                        onSubmit(selectedSsid!!, password)
+                        showPasswordDialog = false
+                        password = ""
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = green,
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(24.dp)
                 ) {
                     Text("Connect")
                 }
@@ -324,10 +375,65 @@ fun NetworkSetupScreen(
                         password = ""
                     }
                 ) {
-                    Text("Cancel")
+                    Text("Back")
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun WifiOptionCard(
+    ssid: String,
+    subtitle: String,
+    indicator: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val green = Color(0xFF2E7D32)
+    val shape = RoundedCornerShape(16.dp)
+    val borderColor = if (selected) green else Color.Black
+    val backgroundColor = if (selected) Color(0xFFE8F5E9) else Color.Transparent
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(2.dp, borderColor, shape)
+            .background(backgroundColor, shape)
+            .clickable { onClick() }
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = ssid,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+            )
+            Text(
+                text = if (selected) "Selected" else "",
+                color = green,
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = indicator,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = green
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF424242)
+            )
+        }
     }
 }
 

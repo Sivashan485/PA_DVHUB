@@ -19,18 +19,24 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.example.dvhub.ui.theme.DVHUBTheme
 import kotlinx.coroutines.delay
 import java.util.UUID
 
@@ -64,7 +70,7 @@ class BleConnectActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         setContent {
-            MaterialTheme {
+            DVHUBTheme {
                 Scaffold(
                 ) { innerPadding ->
                     BleConnectScreen(
@@ -112,7 +118,7 @@ class BleConnectActivity : ComponentActivity() {
     }
 
     private fun navigateToNetworkSetup(deviceName: String) {
-        val intent = Intent(this, NetworkSetupActivity::class.java).apply {
+        val intent = Intent(this, NetworkTypeSelectionActivity::class.java).apply {
             putExtra("DEVICE_ADDRESS", pendingDevice?.address ?: "")
             putExtra("DEVICE_NAME", deviceName)
         }
@@ -139,6 +145,7 @@ fun BleConnectScreen(
     var hasPermissions by remember { mutableStateOf(false) }
     var isScanning by remember { mutableStateOf(false) }
     var hubs by remember { mutableStateOf<List<HubScanItem>>(emptyList()) }
+    var selectedAddress by remember { mutableStateOf<String?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -162,7 +169,6 @@ fun BleConnectScreen(
             .build()
     }
 
-    // Filter: ONLY devices advertising your service UUID
     val scanFilters = remember {
         listOf(
             ScanFilter.Builder()
@@ -183,13 +189,10 @@ fun BleConnectScreen(
 
                 val item = HubScanItem(device = device, name = name, rssi = result.rssi)
 
-                if (!hubs.any { it.device.address == device.address }) {
-                    hubs = hubs + item
+                hubs = if (!hubs.any { it.device.address == device.address }) {
+                    hubs + item
                 } else {
-                    // Update RSSI/name if already present
-                    hubs = hubs.map {
-                        if (it.device.address == device.address) item else it
-                    }
+                    hubs.map { if (it.device.address == device.address) item else it }
                 }
             }
 
@@ -201,20 +204,51 @@ fun BleConnectScreen(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            if (isScanning && scanner != null) {
-                stopSafeScan(scanner, scanCallback)
-            }
+    fun stopScanIfRunning() {
+        if (scanner != null && isScanning) {
+            stopSafeScan(scanner, scanCallback)
+            isScanning = false
         }
+    }
+
+    fun startOrStopScan() {
+        if (scanner == null) return
+
+        if (!isScanning) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && !isLocationEnabled(context)) {
+                Toast.makeText(context, "Enable Location for BLE scanning", Toast.LENGTH_LONG).show()
+                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                return
+            }
+
+            hubs = emptyList()
+            selectedAddress = null
+
+            val started = startSafeScanFiltered(
+                scanner = scanner,
+                callback = scanCallback,
+                settings = scanSettings,
+                filters = scanFilters,
+                context = context
+            )
+            if (started) {
+                isScanning = true
+                Toast.makeText(context, "Scanning for hubs…", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            stopScanIfRunning()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { stopScanIfRunning() }
     }
 
     LaunchedEffect(isScanning) {
         if (isScanning) {
             delay(SCAN_TIMEOUT_MS)
             if (isScanning) {
-                if (scanner != null) stopSafeScan(scanner, scanCallback)
-                isScanning = false
+                stopScanIfRunning()
                 Toast.makeText(context, "Scan completed", Toast.LENGTH_SHORT).show()
             }
         }
@@ -223,7 +257,7 @@ fun BleConnectScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(title = { Text("Available Hubs") })
+            TopAppBar(title = { Text("Connect to a Hub") })
         }
     ) { inner ->
         Column(
@@ -231,94 +265,222 @@ fun BleConnectScreen(
                 .padding(inner)
                 .fillMaxSize()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            if (!hasPermissions) {
-                Text("Bluetooth permissions are required.")
-                Button(onClick = { requestBlePermissions(permissionLauncher) }) {
-                    Text("Grant Permissions")
-                }
-                return@Column
-            }
 
-            if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
-                Text("Please enable Bluetooth.")
-                Button(onClick = { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }) {
-                    Text("Open Bluetooth Settings")
-                }
-                return@Column
-            }
-
-            Button(
+            // ======= TOP CONTENT (like your network page) =======
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                onClick = {
-                    if (scanner == null) return@Button
-
-                    if (!isScanning) {
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && !isLocationEnabled(context)) {
-                            Toast.makeText(context, "Enable Location for BLE scanning", Toast.LENGTH_LONG).show()
-                            context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
-                            return@Button
-                        }
-
-                        hubs = emptyList()
-                        val started = startSafeScanFiltered(
-                            scanner = scanner,
-                            callback = scanCallback,
-                            settings = scanSettings,
-                            filters = scanFilters,
-                            context = context
-                        )
-                        if (started) {
-                            isScanning = true
-                            Toast.makeText(context, "Scanning for hubs…", Toast.LENGTH_SHORT).show()
-                        }
-                    } else {
-                        stopSafeScan(scanner, scanCallback)
-                        isScanning = false
-                    }
-                }
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(if (isScanning) "Stop Scan" else "Start Scan")
-            }
+                Text(
+                    text = "Find your hub",
+                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
 
-            if (isScanning) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Scanning…")
+                Spacer(Modifier.height(8.dp))
+
+                Text(
+                    text = "Start a scan and select the hub you want to set up. It may take a few seconds to connect to the device. ",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                )
+
+                Spacer(Modifier.height(16.dp))
+
+                // ======= STATES =======
+                if (!hasPermissions) {
+                    InfoCard(
+                        title = "Bluetooth permissions required",
+                        subtitle = "Grant permissions to scan and connect.",
+                        actionText = "Grant Permissions",
+                        onAction = { requestBlePermissions(permissionLauncher) }
+                    )
+                    return@Column
                 }
-            }
 
-            Text(
-                text = "Hubs found: ${hubs.size}",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-            )
+                if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+                    InfoCard(
+                        title = "Bluetooth is off",
+                        subtitle = "Turn on Bluetooth to find nearby hubs.",
+                        actionText = "Open Bluetooth Settings",
+                        onAction = { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                    )
+                    return@Column
+                }
 
-            if (hubs.isEmpty() && !isScanning) {
-                Text("No hubs found. Tap Start Scan.")
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(hubs, key = { it.device.address }) { hub ->
-                        ListItem(
-                            headlineContent = { Text(hub.name) },
-                            supportingContent = { Text("${hub.device.address}  •  RSSI ${hub.rssi}") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (scanner != null && isScanning) {
-                                        stopSafeScan(scanner, scanCallback)
-                                        isScanning = false
-                                    }
-                                    onConnect(hub.device)
-                                }
-                        )
+                // ======= SCAN BUTTON =======
+                Button(
+                    onClick = { startOrStopScan() },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF2E7D32),
+                        contentColor = Color.White,
+                        disabledContainerColor = Color(0xFFBDBDBD),
+                        disabledContentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Text(if (isScanning) "Stop Scan" else "Start Scan", fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                if (isScanning) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Scanning…", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+
+                Text(
+                    text = "Hubs found: ${hubs.size}",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                // ======= HUB LIST AS CARDS =======
+                if (hubs.isEmpty() && !isScanning) {
+                    Text(
+                        text = "No hubs found. Tap Start Scan.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp) // prevents pushing the bottom button off-screen
+                    ) {
+                        items(hubs, key = { it.device.address }) { hub ->
+                            val selected = selectedAddress == hub.device.address
+
+                            HubOptionCard(
+                                title = hub.name,
+                                subtitle = "${hub.device.address}  •  RSSI ${hub.rssi}",
+                                selected = selected,
+                                onClick = { selectedAddress = hub.device.address }
+                            )
+
+                            Spacer(Modifier.height(12.dp))
+                        }
                     }
                 }
+            }
+
+            // ======= BOTTOM ACTION (like Continue) =======
+            val selectedDevice = hubs.firstOrNull { it.device.address == selectedAddress }?.device
+            Button(
+                onClick = {
+                    val device = selectedDevice ?: return@Button
+                    stopScanIfRunning()
+                    onConnect(device)
+                },
+                enabled = selectedDevice != null,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2E7D32),
+                    contentColor = Color.White,
+                    disabledContainerColor = Color(0xFFBDBDBD),
+                    disabledContentColor = Color.White
+                ),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Text("Continue", fontWeight = FontWeight.SemiBold)
             }
         }
     }
 }
+
+@Composable
+private fun HubOptionCard(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(16.dp)
+    val borderColor = if (selected) Color(0xFF2E7D32) else Color.Black
+    val backgroundColor = if (selected) Color(0xFFE8F5E9) else Color.Transparent
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(width = 2.dp, color = borderColor, shape = shape)
+            .background(color = backgroundColor, shape = shape)
+            .clickable { onClick() }
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(title, fontWeight = FontWeight.Bold,
+                    color = if (selected) Color.Black else Color.White,
+
+                )
+            Text(
+                text = if (selected) "Selected" else "",
+                color = Color(0xFF2E7D32),
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+            )
+        }
+
+        Spacer(Modifier.height(6.dp))
+
+        Text(
+            text = subtitle,
+            color = Color(0xFF424242),
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+@Composable
+private fun InfoCard(
+    title: String,
+    subtitle: String,
+    actionText: String,
+    onAction: () -> Unit
+) {
+    val shape = RoundedCornerShape(16.dp)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(2.dp, Color.Black, shape)
+            .padding(16.dp)
+    ) {
+        Text(title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = Color(0xFF424242))
+        Spacer(Modifier.height(12.dp))
+        Button(
+            onClick = onAction,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF2E7D32),
+                contentColor = Color.White
+            ),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Text(actionText)
+        }
+    }
+}
+
 
 @SuppressLint("MissingPermission")
 private fun startSafeScanFiltered(
